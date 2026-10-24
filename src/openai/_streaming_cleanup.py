@@ -27,3 +27,78 @@ async def drain_response_async(response: httpx2.Response) -> None:
         # cancellation. Cancellation still propagates after the response closes.
         with anyio.CancelScope(shield=True):
             await response.aclose()
+
+
+from typing import Any, Callable, Optional, Awaitable
+
+
+def _cleanup_error(
+    primary: Optional[BaseException],
+    failure: Optional[BaseException],
+) -> Optional[BaseException]:
+    if failure is None:
+        return None
+    if primary is None:
+        return failure
+    if not isinstance(failure, Exception) and isinstance(primary, Exception):
+        return failure
+    return None
+
+
+def _keep(
+    failure: Optional[BaseException], err: BaseException
+) -> BaseException:
+    if failure is None or (
+        isinstance(failure, Exception) and not isinstance(err, Exception)
+    ):
+        return err
+    return failure
+
+
+def close_owned(
+    *resources: object, primary: Optional[BaseException] = None
+) -> None:
+    failure: Optional[BaseException] = None
+    for resource in resources:
+        try:
+            close = getattr(resource, "close", None)
+            if close is not None:
+                close()
+        except BaseException as err:
+            failure = _keep(failure, err)
+    error = _cleanup_error(primary, failure)
+    if error is not None:
+        raise error
+
+
+async def aclose_owned(
+    *resources: object, primary: Optional[BaseException] = None
+) -> None:
+    failure: Optional[BaseException] = None
+    with anyio.CancelScope(shield=True):
+        for resource in resources:
+            try:
+                aclose = getattr(resource, "aclose", None)
+                if aclose is not None:
+                    await aclose()
+            except BaseException as err:
+                failure = _keep(failure, err)
+    error = _cleanup_error(primary, failure)
+    if error is not None:
+        raise error
+
+
+async def run_cleanup(
+    cleanup: Callable[[], Awaitable[Any]],
+    *,
+    primary: Optional[BaseException] = None,
+) -> None:
+    failure: Optional[BaseException] = None
+    with anyio.CancelScope(shield=True):
+        try:
+            await cleanup()
+        except BaseException as err:
+            failure = err
+    error = _cleanup_error(primary, failure)
+    if error is not None:
+        raise error
