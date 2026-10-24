@@ -583,6 +583,20 @@ async def test_async_stream_aclosing(raise_error: bool) -> None:
 
         assert response.is_closed
 
+@pytest.mark.asyncio
+async def test_async_stream_closes_event_iterator_on_early_exit(async_client: AsyncOpenAI) -> None:
+    def body() -> Iterator[bytes]:
+        yield b'data: {"id":"test"}\n\n'
+        yield b"data: [DONE]\n\n"
+
+    response = httpx2.Response(200, content=to_aiter(body()))
+    stream = AsyncStream(cast_to=object, client=async_client, response=response)
+
+    iterator = stream._iterator
+    await iterator.__anext__()
+    await iterator.aclose()
+
+    assert response.is_closed
 
 async def to_aiter(iter: Iterator[bytes]) -> AsyncIterator[bytes]:
     for chunk in iter:

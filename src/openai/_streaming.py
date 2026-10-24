@@ -13,7 +13,7 @@ import httpx2
 from ._utils import is_mapping, extract_type_var_from_base
 from ._httpx2 import request_exceptions, timeout_exceptions
 from ._exceptions import APIError, APITimeoutError, APIConnectionError
-from ._streaming_cleanup import drain_response_async
+from ._streaming_cleanup import aclose_owned, drain_response_async
 
 if TYPE_CHECKING:
     from ._client import OpenAI, AsyncOpenAI
@@ -162,18 +162,20 @@ class AsyncStream(Generic[_T]):
     async def __anext__(self) -> _T:
         return await self._iterator.__anext__()
 
-    async def __aiter__(self) -> AsyncIterator[_T]:
-        async for item in self._iterator:
-            yield item
+    def __aiter__(self) -> AsyncIterator[_T]:
+        return self._iterator
 
     async def _iter_events(self) -> AsyncIterator[ServerSentEvent]:
+        iterator = self._decoder.aiter_bytes(self.response.aiter_bytes())
         try:
-            async for sse in self._decoder.aiter_bytes(self.response.aiter_bytes()):
+            async for sse in iterator:
                 yield sse
         except timeout_exceptions() as err:
             raise APITimeoutError(request=self.response.request) from err
         except request_exceptions() as err:
             raise APIConnectionError(request=self.response.request) from err
+        finally:
+            await aclose_owned(iterator)
 
     async def __stream__(self) -> AsyncIterator[_T]:
         cast_to = cast(Any, self._cast_to)
@@ -234,8 +236,7 @@ class AsyncStream(Generic[_T]):
                         response=response,
                     )
         finally:
-            # Ensure the response is closed even if the consumer doesn't read all data
-            await response.aclose()
+            await aclose_owned(iterator, response)
 
     async def __aenter__(self) -> Self:
         return self
